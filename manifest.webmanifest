@@ -1,0 +1,27 @@
+{
+  "name": "Kimi — Voice Reminders",
+  "short_name": "Kimi",
+  "description": "Tap, talk, done. A voice-first reminder assistant for tasks, bills and subscriptions. Works offline and keeps your data on your phone.",
+  "id": "./",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F6F3EE",
+  "theme_color": "#1F7A5C",
+  "categories": ["productivity", "lifestyle", "finance"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Speak a reminder", "short_name": "Speak", "url": "./?action=voice", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Bills & subscriptions", "short_name": "Bills", "url": "./?tab=bills", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ],
+  "share_target": {
+    "action": "./",
+    "method": "GET",
+    "params": { "title": "share_title", "text": "share_text", "url": "share_url" }
+  }
+}
