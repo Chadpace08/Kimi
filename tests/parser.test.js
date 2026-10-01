@@ -91,3 +91,29 @@ test('ics export has recurrence', () => {
   assert.match(ics, /RRULE:FREQ=MONTHLY/);
   assert.match(ics, /BEGIN:VALARM/);
 });
+
+test('appointments are detected', () => {
+  const r = P('dentist appointment next Tuesday at 10:30 am');
+  assert.equal(r.type, 'appointment');
+  assert.equal(r.due, '2026-10-06T10:30');
+  assert.equal(r.dateSaid, true);
+  assert.equal(r.timeSaid, true);
+  assert.equal(P('meeting with Yen at 3').type, 'appointment');
+});
+
+test('dateSaid/timeSaid flags', () => {
+  const r = P('call mom');
+  assert.equal(r.dateSaid, false);
+  assert.equal(r.timeSaid, false);
+  const t = P('call mom at 4pm');
+  assert.equal(t.dateSaid, false);
+  assert.equal(t.timeSaid, true);
+});
+
+test('occurrences project repeats into a month', () => {
+  const rem = { id: 'o', type: 'task', due: '2026-10-02T09:00', repeat: { freq: 'week', n: 1 } };
+  const occ = C.occurrences(rem, new Date(2026, 9, 1), new Date(2026, 9, 31, 23, 59));
+  assert.deepEqual(occ.map(s => s.slice(8, 10)), ['02', '09', '16', '23', '30']);
+  const once = { id: 'p', type: 'bill', due: '2026-10-15T09:00', repeat: null };
+  assert.equal(C.occurrences(once, new Date(2026, 9, 1), new Date(2026, 9, 31)).length, 1);
+});

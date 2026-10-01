@@ -1,7 +1,7 @@
 /* ═══════════ Kimi — voice-first reminder assistant ═══════════ */
 'use strict';
 const C = window.KimiCore;
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.1.0';
 
 /* ───────── Small helpers ───────── */
 const $ = (s, r = document) => r.querySelector(s);
@@ -16,8 +16,21 @@ function haptic(p = 12) { try { if (S.settings.haptics !== false && navigator.vi
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const TYPE_LABEL = { task: 'Task', bill: 'Bill', subscription: 'Subscription' };
-const TYPE_ICON = { task: 'task', bill: 'receipt', subscription: 'repeat' };
+const TYPE_LABEL = { task: 'Task', appointment: 'Appointment', bill: 'Bill', subscription: 'Subscription' };
+const TYPE_ICON = { task: 'task', appointment: 'calendar', bill: 'receipt', subscription: 'repeat' };
+const doneWord = t => (C.isMoney(t) ? 'Paid' : 'Done');
+const SECTIONS = [
+  ['task', 'Tasks', 'Things to do'],
+  ['appointment', 'Appointments', 'Meetings, check-ups, calls'],
+  ['bill', 'Bills', 'Payments to make'],
+  ['subscription', 'Subscriptions', 'Netflix, Canva, domains…']
+];
+const SAY_FOR = {
+  task: 'Send the invoice tomorrow morning',
+  appointment: 'Dentist appointment next Tuesday at 10',
+  bill: 'Pay Meralco 2,350 on the 20th',
+  subscription: 'My Netflix is 549 pesos every month'
+};
 
 /* ───────── State & storage ───────── */
 const DEFAULTS = {
@@ -29,7 +42,7 @@ const DEFAULTS = {
   reminders: [], log: [], legacyNotes: [], updatedAt: 0
 };
 let S = clone(DEFAULTS);
-const ui = { tab: 'home', listSeg: 'upcoming', q: '', awayCount: 0 };
+const ui = { tab: 'home', listType: 'all', listView: 'upcoming', q: '', awayCount: 0, calMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1), calSel: null };
 
 const DB = {
   db: null,
@@ -319,11 +332,11 @@ function cardHTML(r, now, i = 0) {
   let right = '';
   if (r.amount != null) right = `<div class="card-right"><span class="amount">${esc(C.money(r.amount, r.currency))}</span><span class="tag ${r.type}">${TYPE_LABEL[r.type]}</span></div>`;
   else if (r.type !== 'task') right = `<div class="card-right"><span class="tag ${r.type}">${TYPE_LABEL[r.type]}</span></div>`;
-  const doneWord = r.type === 'task' ? 'Done' : 'Paid';
+  const word = doneWord(r.type);
   return `<div class="swipe" data-id="${r.id}" style="animation-delay:${Math.min(i, 8) * 35}ms">
-    <div class="swipe-bg"><span class="l">${icon('check')} ${doneWord}</span><span class="r">Snooze ${icon('snooze')}</span></div>
+    <div class="swipe-bg"><span class="l">${icon('check')} ${word}</span><span class="r">Snooze ${icon('snooze')}</span></div>
     <div class="card${over ? ' overdue' : ''}${r.done ? ' is-done' : ''}" data-act="open" data-id="${r.id}">
-      <button class="check t-${r.type}${r.done ? ' done' : ''}" data-act="${r.done ? 'restore' : 'complete'}" data-id="${r.id}" aria-label="${r.done ? 'Restore' : 'Mark ' + doneWord.toLowerCase()}">${icon('check')}</button>
+      <button class="check t-${r.type}${r.done ? ' done' : ''}" data-act="${r.done ? 'restore' : 'complete'}" data-id="${r.id}" aria-label="${r.done ? 'Restore' : 'Mark ' + word.toLowerCase()}">${icon('check')}</button>
       <div class="card-main"><div class="card-title">${esc(r.title)}</div><div class="card-meta">${meta.join('')}</div></div>
       ${right}
     </div>
@@ -367,7 +380,7 @@ function assistantLine(now, over, today, act) {
     const nxt = act[0];
     parts.push(nxt ? `Nothing due today <span class="hl-green">🎉</span> Next is <b>${esc(nxt.title)}</b> ${esc(dayWord(nxt.due, now))} at ${C.fmtTime(C.fromLocal(nxt.due))}.` : `You're all clear. Nothing on your plate <span class="hl-green">🎉</span>`);
   }
-  const money = act.find(r => r.type !== 'task' && r.amount != null && !over.includes(r) && !today.includes(r) && C.dayDiff(now, C.fromLocal(r.due)) <= 7);
+  const money = act.find(r => C.isMoney(r.type) && r.amount != null && !over.includes(r) && !today.includes(r) && C.dayDiff(now, C.fromLocal(r.due)) <= 7);
   if (money && parts.length < 2) parts.push(`<b>${esc(money.title)}</b> (${esc(C.money(money.amount, money.currency))}) is due ${esc(dayWord(money.due, now))}.`);
   return parts.join(' ');
 }
@@ -432,89 +445,166 @@ function renderHome() {
 }
 
 function renderList() {
-  const now = new Date();
-  const counts = {
-    upcoming: activeReminders().length,
-    repeating: activeReminders().filter(r => r.repeat).length,
-    done: S.reminders.filter(r => r.done).length
-  };
+  const act = activeReminders();
+  const count = t => act.filter(r => t === 'all' || r.type === t).length;
+  const addType = ui.listType === 'all' ? 'task' : ui.listType;
   $('#screen-list').innerHTML = `
-    <div class="page-head"><div><div class="page-title">Reminders</div><div class="page-sub">Swipe right when done · swipe left to snooze</div></div>
-      <button class="icon-btn" data-act="new" aria-label="Add reminder without voice">${icon('plus')}</button></div>
-    <label class="search">${icon('search', 'sm')}<input id="list-q" type="search" placeholder="Search reminders" value="${esc(ui.q)}" autocomplete="off" enterkeyhint="search"></label>
-    <div class="seg" role="tablist">
-      ${['upcoming', 'repeating', 'done'].map(k => `<button class="${ui.listSeg === k ? 'on' : ''}" data-act="seg" data-v="${k}">${k[0].toUpperCase() + k.slice(1)} <span class="n">${counts[k]}</span></button>`).join('')}
+    <div class="page-head"><div><div class="page-title">Reminders</div><div class="page-sub">Swipe right = done · swipe left = snooze</div></div>
+      <button class="icon-btn" data-act="new" data-type="${addType}" aria-label="Add reminder">${icon('plus')}</button></div>
+    <div class="type-chips" role="tablist">
+      ${[['all', 'All'], ...SECTIONS].map(([k, l]) => `<button class="tchip${ui.listType === k ? ' on' : ''}" data-act="list-type" data-v="${k}">${k !== 'all' ? `<span class="sec-ic ${k}">${icon(TYPE_ICON[k])}</span>` : ''}${l} <span class="n">${count(k)}</span></button>`).join('')}
     </div>
+    <label class="search">${icon('search', 'sm')}<input id="list-q" type="search" placeholder="Search reminders" value="${esc(ui.q)}" autocomplete="off" enterkeyhint="search"></label>
+    <div class="view-toggle">${[['upcoming', 'Upcoming'], ['done', 'Done']].map(([v, l]) => `<button class="${ui.listView === v ? 'on' : ''}" data-act="list-view" data-v="${v}">${l}</button>`).join('')}</div>
     <div id="list-body"></div>`;
-  renderListBody(now);
+  renderListBody();
 }
 function renderListBody(now = new Date()) {
   const q = ui.q.trim().toLowerCase();
   const match = r => !q || r.title.toLowerCase().includes(q) || (r.notes || '').toLowerCase().includes(q) || (r.heard || '').toLowerCase().includes(q);
+  const t = ui.listType;
+  const ofType = r => t === 'all' || r.type === t;
+  const sectionName = t === 'all' ? 'reminders' : SECTIONS.find(x => x[0] === t)[1].toLowerCase();
   let html = '';
-  if (ui.listSeg === 'upcoming') {
+  if (ui.listView === 'done') {
+    const done = S.reminders.filter(r => r.done && ofType(r) && match(r)).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
+    html = done.length ? `<div class="section-h"><h3>Completed <span class="count">${done.length}</span></h3><button class="link-btn" data-act="clear-done">Clear all</button></div><div class="list">${done.slice(0, 100).map((r, i) => cardHTML(r, now, i)).join('')}</div>`
+      : emptyHTML('check', 'Nothing finished yet', `Finished ${sectionName} show up here. Tap the circle to bring one back.`);
+  } else if (t === 'all') {
     const act = activeReminders().filter(match).sort(byDue);
+    if (!act.length) {
+      html = q ? emptyHTML('search', 'No matches', `Nothing found for “${esc(ui.q)}”.`) : emptyHTML('sparkle', 'Nothing to remember yet', 'Tap the mic and say something like:', SAY_FOR.task);
+    } else {
+      html = SECTIONS.map(([k, label]) => {
+        const items = act.filter(r => r.type === k);
+        if (!items.length && q) return '';
+        const head = `<div class="section-h"><h3><span class="sec-ic ${k}">${icon(TYPE_ICON[k])}</span> ${label} <span class="count">${items.length}</span></h3>${items.length ? `<button class="link-btn" data-act="list-type" data-v="${k}">See all</button>` : ''}</div>`;
+        if (!items.length) return head + `<div class="sec-empty"><span>No ${label.toLowerCase()} yet</span><button class="link-btn" data-act="new" data-type="${k}">+ Add</button></div>`;
+        return head + `<div class="list">${items.slice(0, 4).map((r, i) => cardHTML(r, now, i)).join('')}</div>`;
+      }).join('');
+    }
+  } else {
+    const act = activeReminders().filter(r => r.type === t && match(r)).sort(byDue);
+    if (C.isMoney(t)) html += moneySummaryHTML(t, now);
     const g = { overdue: [], today: [], tomorrow: [], week: [], later: [] };
     act.forEach(r => g[bucketOf(r, now)].push(r));
-    html = section('Overdue', g.overdue, now, { danger: true }) + section('Today', g.today, now) + section('Tomorrow', g.tomorrow, now) + section('This week', g.week, now) + section('Later', g.later, now);
-    if (!act.length) html = q ? emptyHTML('search', 'No matches', `Nothing found for “${esc(ui.q)}”.`) : emptyHTML('sparkle', 'Your mind is clear', 'No reminders yet. Tap the mic and say something like:', '“Remind me to call the bank tomorrow at 10”');
-  } else if (ui.listSeg === 'repeating') {
-    const rep = activeReminders().filter(r => r.repeat && match(r)).sort(byDue);
-    html = rep.length ? `<div class="list" style="margin-top:16px">${rep.map((r, i) => cardHTML(r, now, i)).join('')}</div>`
-      : emptyHTML('repeat', 'No repeating reminders', 'Say “every” and I\'ll repeat it for you:', '“Every Friday, check my bookkeeping”', 'violet');
-  } else {
-    const done = S.reminders.filter(r => r.done && match(r)).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
-    html = done.length ? `<div class="section-h"><h3>Completed <span class="count">${done.length}</span></h3><button class="link-btn" data-act="clear-done">Clear all</button></div><div class="list">${done.slice(0, 100).map((r, i) => cardHTML(r, now, i)).join('')}</div>`
-      : emptyHTML('check', 'Nothing finished yet', 'One-time reminders you complete show up here. Tap the circle to bring one back.');
+    html += section('Overdue', g.overdue, now, { danger: true }) + section('Today', g.today, now) + section('Tomorrow', g.tomorrow, now) + section('This week', g.week, now) + section('Later', g.later, now);
+    if (!act.length) {
+      const sec = SECTIONS.find(x => x[0] === t);
+      html += q ? emptyHTML('search', 'No matches', `Nothing found for “${esc(ui.q)}”.`)
+        : emptyHTML(TYPE_ICON[t], `No ${sec[1].toLowerCase()} yet`, 'Tap the mic and say something like:', SAY_FOR[t], t === 'bill' ? 'gold' : t === 'subscription' ? 'violet' : '');
+    }
+    if (C.isMoney(t)) {
+      const recent = S.log.filter(l => l.action === 'done' && l.type === t).slice(0, 5);
+      if (recent.length) html += `<div class="section-h"><h3>Recently paid</h3></div><div class="group">${recent.map(l => `<div class="row"><div class="row-ic">${icon('check', 'sm')}</div><div class="row-txt"><b>${esc(l.title)}</b><span>${esc(C.whenLabel(l.at, now).split(' · ')[0])}</span></div><span class="amount">${l.amount != null ? esc(C.money(l.amount, l.currency)) : ''}</span></div>`).join('')}</div>`;
+    }
   }
   const body = $('#list-body');
   if (body) body.innerHTML = html;
 }
 function emptyHTML(ic, title, text, say = '', tone = '') {
-  return `<div class="empty" style="margin-top:16px"><div class="empty-art ${tone}">${icon(ic)}</div><h4>${title}</h4><p>${text}</p>${say ? `<button class="say" data-act="try" data-text="${esc(say.replace(/[“”]/g, ''))}">${esc(say)}</button>` : ''}</div>`;
+  return `<div class="empty" style="margin-top:16px"><div class="empty-art ${tone}">${icon(ic)}</div><h4>${title}</h4><p>${text}</p>${say ? `<button class="say" data-act="try" data-text="${esc(say)}">“${esc(say)}”</button>` : ''}</div>`;
 }
-
-function renderBills() {
-  const now = new Date();
-  const items = activeReminders().filter(r => r.type !== 'task').sort(byDue);
+function moneySummaryHTML(type, now) {
   const cur = S.settings.currency;
-  const monthly = {}, next30 = {};
-  let subs = 0, bills = 0;
+  const items = activeReminders().filter(r => r.type === type);
+  const monthly = {}, next30 = {}, paid = {};
   items.forEach(r => {
-    if (r.type === 'subscription') subs++; else bills++;
     if (r.amount == null) return;
     if (r.repeat) monthly[r.currency] = (monthly[r.currency] || 0) + C.monthlyEquivalent(r.amount, r.repeat);
     if (C.dayDiff(now, C.fromLocal(r.due)) <= 30) next30[r.currency] = (next30[r.currency] || 0) + r.amount;
   });
   const monthKey = C.toLocal(now).slice(0, 7);
-  const paid = {};
-  S.log.filter(l => l.action === 'done' && l.type !== 'task' && l.amount != null && l.at.startsWith(monthKey)).forEach(l => { paid[l.currency] = (paid[l.currency] || 0) + l.amount; });
-  const fmtMulti = (obj, big = false) => {
+  S.log.filter(l => l.action === 'done' && l.type === type && l.amount != null && l.at.startsWith(monthKey)).forEach(l => { paid[l.currency] = (paid[l.currency] || 0) + l.amount; });
+  const fmt = obj => {
     const keys = Object.keys(obj).sort((a, b) => (a === cur ? -1 : b === cur ? 1 : 0));
-    if (!keys.length) return C.money(0, cur);
-    const [first, ...rest] = keys;
-    return esc(C.money(Math.round(obj[first] * 100) / 100, first)) + (rest.length ? (big ? '<small> + ' : ' + ') + rest.map(k => esc(C.money(Math.round(obj[k] * 100) / 100, k))).join(' + ') + (big ? '</small>' : '') : '');
+    if (!keys.length) return esc(C.money(0, cur));
+    return keys.map(k => esc(C.money(Math.round(obj[k] * 100) / 100, k))).join(' + ');
   };
-  const g = { overdue: [], week: [], later: [] };
-  items.forEach(r => { const b = bucketOf(r, now); g[b === 'overdue' ? 'overdue' : b === 'later' ? 'later' : 'week'].push(r); });
-  const recent = S.log.filter(l => l.action === 'done' && l.type !== 'task').slice(0, 5);
-
-  $('#screen-bills').innerHTML = `
-    <div class="page-head"><div><div class="page-title">Bills</div><div class="page-sub">Subscriptions & payments you track</div></div>
-      <button class="icon-btn" data-act="new" data-type="bill" aria-label="Add bill">${icon('plus')}</button></div>
-    <div class="money-hero">
-      <div class="mh-label">Recurring per month</div>
-      <div class="mh-total">${fmtMulti(monthly, true)}</div>
-      <div style="opacity:.75;font-size:14px;position:relative;z-index:1">${plural(subs, 'subscription')} · ${plural(bills, 'bill')}</div>
+  return `<div class="money-hero">
+      <div class="mh-label">${type === 'bill' ? 'Repeating bills' : 'Subscriptions'} per month</div>
+      <div class="mh-total">${fmt(monthly)}</div>
       <div class="mh-row">
-        <div class="mh-stat"><b>${fmtMulti(next30)}</b><span>Due in 30 days</span></div>
-        <div class="mh-stat"><b>${fmtMulti(paid)}</b><span>Paid this month</span></div>
+        <div class="mh-stat"><b>${fmt(next30)}</b><span>Due in 30 days</span></div>
+        <div class="mh-stat"><b>${fmt(paid)}</b><span>Paid this month</span></div>
+      </div>
+    </div>`;
+}
+
+/* ───────── Calendar ───────── */
+function eventsBetween(from, to) {
+  const map = {};
+  activeReminders().forEach(r => {
+    C.occurrences(r, from, to).forEach(due => {
+      const k = due.slice(0, 10);
+      (map[k] = map[k] || []).push({ r, due });
+    });
+  });
+  Object.values(map).forEach(list => list.sort((a, b) => (a.due < b.due ? -1 : 1)));
+  return map;
+}
+function dayTitle(key, now = new Date()) {
+  const d = C.fromLocal(key + 'T12:00');
+  const diff = C.dayDiff(now, d);
+  const base = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  return diff === 0 ? 'Today, ' + base : diff === 1 ? 'Tomorrow, ' + base : base;
+}
+function renderCalendar() {
+  const now = new Date();
+  const todayKey = C.toLocal(now).slice(0, 10);
+  if (!ui.calSel) ui.calSel = todayKey;
+  const y = ui.calMonth.getFullYear(), m = ui.calMonth.getMonth();
+  const first = new Date(y, m, 1);
+  const start = C.addDays(first, -first.getDay());
+  const dim = new Date(y, m + 1, 0).getDate();
+  const weeks = Math.ceil((first.getDay() + dim) / 7);
+  const end = C.addDays(start, weeks * 7);
+  const ev = eventsBetween(start, new Date(end.getTime() - 60000));
+  let cells = '';
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = C.addDays(start, i);
+    const key = C.toLocal(d).slice(0, 10);
+    const types = [...new Set((ev[key] || []).map(e => e.r.type))].slice(0, 3);
+    const cls = ['cal-day', d.getMonth() !== m ? 'other' : '', key === todayKey ? 'today' : '', key === ui.calSel ? 'sel' : ''].filter(Boolean).join(' ');
+    cells += `<button class="${cls}" data-act="cal-day" data-date="${key}" aria-label="${esc(dayTitle(key, now))}${ev[key] ? ', ' + plural(ev[key].length, 'reminder') : ''}"><span class="num">${d.getDate()}</span><span class="dots">${types.map(t => `<i class="${t}"></i>`).join('')}</span></button>`;
+  }
+  const sel = ev[ui.calSel] || [];
+  const selIn = C.fromLocal(ui.calSel + 'T12:00') >= start && C.fromLocal(ui.calSel + 'T12:00') < end;
+  const items = selIn ? sel : (eventsBetween(C.fromLocal(ui.calSel + 'T00:00'), C.fromLocal(ui.calSel + 'T23:59'))[ui.calSel] || []);
+  const list = items.map(({ r, due }, i) => (due === r.due ? cardHTML(r, now, i)
+    : `<button class="day-row" data-act="open" data-id="${r.id}"><span class="t">${esc(C.fmtTime(C.fromLocal(due)))}</span><span class="b"><b>${esc(r.title)}</b><span>${icon('repeat', 'xs')} ${esc(C.repeatLabel(r.repeat, r.base || r.due))} · coming up</span></span>${r.amount != null ? `<span class="amount">${esc(C.money(r.amount, r.currency))}</span>` : `<span class="tag ${r.type}">${TYPE_LABEL[r.type]}</span>`}</button>`)).join('');
+  $('#screen-calendar').innerHTML = `
+    <div class="page-head"><div><div class="page-title">Calendar</div><div class="page-sub">Tap a day to see it</div></div>
+      <button class="icon-btn" data-act="add-on-date" data-date="${ui.calSel}" aria-label="Add on selected day">${icon('plus')}</button></div>
+    <div class="cal-head">
+      <div class="cal-month">${C.MONTHS[m][0].toUpperCase() + C.MONTHS[m].slice(1)} ${y}</div>
+      <div class="cal-nav">
+        <button class="btn sm soft" data-act="cal-today">Today</button>
+        <button class="icon-btn" data-act="cal-prev" aria-label="Previous month">${icon('chev-l', 'sm')}</button>
+        <button class="icon-btn" data-act="cal-next" aria-label="Next month">${icon('chev', 'sm')}</button>
       </div>
     </div>
-    ${items.length ? section('Overdue', g.overdue, now, { danger: true }) + section('Due this week', g.week, now) + section('Later', g.later, now)
-      : emptyHTML('wallet', 'No bills yet', 'Tell me about a bill or subscription and I\'ll remind you before it\'s due:', '“My Netflix is 549 pesos every month”', 'gold')}
-    ${recent.length ? `<div class="section-h"><h3>Recently paid</h3></div><div class="group">${recent.map(l => `<div class="row"><div class="row-ic">${icon('check', 'sm')}</div><div class="row-txt"><b>${esc(l.title)}</b><span>${esc(C.whenLabel(l.at, now).split(' · ')[0])}</span></div><span class="amount">${l.amount != null ? esc(C.money(l.amount, l.currency)) : ''}</span></div>`).join('')}</div>` : ''}
+    <div class="cal-hint">${icon('sparkle', 'xs')} Double-tap or press and hold a date to add something</div>
+    <div class="cal-grid" id="cal-grid">
+      ${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => `<div class="cal-dow">${d}</div>`).join('')}
+      ${cells}
+    </div>
+    <div class="legend">${SECTIONS.map(([k, l]) => `<span><i class="${k}" style="background:var(--${k === 'task' ? 'brand' : k === 'appointment' ? 'blue' : k === 'bill' ? 'amber' : 'violet'})"></i>${l}</span>`).join('')}</div>
+    <div class="section-h"><h3>${esc(dayTitle(ui.calSel, now))} <span class="count">${items.length}</span></h3><button class="btn soft sm" data-act="add-on-date" data-date="${ui.calSel}">${icon('plus', 'sm')} Add</button></div>
+    ${items.length ? `<div class="list">${list}</div>` : `<div class="sec-empty"><span>Nothing on this day.</span><button class="link-btn" data-act="add-on-date" data-date="${ui.calSel}">+ Add</button></div>`}
   `;
+}
+function openAddOnDate(key) {
+  ui.calSel = key;
+  if (ui.tab === 'calendar') renderCalendar();
+  haptic(20);
+  openSheet({
+    title: 'Add on ' + dayTitle(key),
+    body: `<div class="add-tiles">
+      <button class="add-tile add-speak" data-act="date-speak" data-date="${key}"><span class="sec-ic">${icon('mic')}</span><span><b>Speak or type it</b><br><span>“Dentist at 3 PM”. I'll put it on this day</span></span></button>
+      ${SECTIONS.map(([k, , sub]) => `<button class="add-tile" data-act="date-new" data-type="${k}" data-date="${key}"><span class="sec-ic ${k}">${icon(TYPE_ICON[k])}</span><b>${TYPE_LABEL[k]}</b><span>${sub}</span></button>`).join('')}
+    </div>`
+  });
 }
 
 function toggleHTML(key, on) {
@@ -601,7 +691,7 @@ function renderAll() {
   renderNav();
   if (ui.tab === 'home') renderHome();
   else if (ui.tab === 'list') renderList();
-  else if (ui.tab === 'bills') renderBills();
+  else if (ui.tab === 'calendar') renderCalendar();
   else renderSettings();
 }
 function switchTab(tab) {
@@ -638,8 +728,8 @@ function complete(id, fromEl) {
     setTimeout(() => wrap.classList.add('collapse'), 260);
     setTimeout(renderAll, 640);
   } else renderAll();
-  const word = r.type === 'task' ? 'Done' : 'Paid';
-  const msg = res.next ? `${word}! Next one: ${esc(C.whenLabel(res.next))}` : r.type === 'task' ? 'Nice, done! ✓' : `Marked as paid ✓`;
+  const word = doneWord(r.type);
+  const msg = res.next ? `${word}! Next one: ${esc(C.whenLabel(res.next))}` : C.isMoney(r.type) ? 'Marked as paid ✓' : 'Nice, done! ✓';
   toast(msg, {
     action: 'Undo', onAction: () => {
       const i = S.reminders.findIndex(x => x.id === id);
@@ -716,7 +806,7 @@ function openDetail(id) {
   const r = find(id); if (!r) return;
   const now = new Date();
   const over = !r.done && C.fromLocal(r.due) < now;
-  const word = r.type === 'task' ? 'done' : 'paid';
+  const word = doneWord(r.type).toLowerCase();
   openSheet({
     title: TYPE_LABEL[r.type],
     body: `
@@ -740,7 +830,7 @@ function openDetail(id) {
         <button class="act red" data-act="delete" data-id="${id}">${icon('trash')} Delete</button>
       </div>
       ${r.heard ? `<p class="heard" style="margin-top:16px">You said: “${esc(r.heard)}”</p>` : ''}
-      ${r.history && r.history.length ? `<div class="history"><div class="field-label">History</div><ul>${r.history.slice(0, 8).map(h => `<li><span>${r.type === 'task' ? 'Done' : 'Paid'}</span><span>${esc(C.whenLabel(h.at, now))}</span></li>`).join('')}</ul></div>` : ''}
+      ${r.history && r.history.length ? `<div class="history"><div class="field-label">History</div><ul>${r.history.slice(0, 8).map(h => `<li><span>${doneWord(r.type)}</span><span>${esc(C.whenLabel(h.at, now))}</span></li>`).join('')}</ul></div>` : ''}
     `
   });
 }
@@ -765,7 +855,7 @@ function formHTML(d, { ask = false } = {}) {
   const [date, time] = (d.due || C.toLocal(new Date())).split('T');
   return `
     <div class="field"><label for="f-title">What</label><input class="input title-input" id="f-title" value="${esc(d.title)}" maxlength="140" autocomplete="off" enterkeyhint="done" placeholder="e.g. Pay internet bill"></div>
-    <div class="field"><div class="seg" id="f-type">${['task', 'bill', 'subscription'].map(t => `<button type="button" class="${d.type === t ? 'on' : ''}" data-act="f-type" data-v="${t}">${icon(TYPE_ICON[t], 'xs')} ${TYPE_LABEL[t]}</button>`).join('')}</div></div>
+    <div class="field"><label>Type</label><div class="chips wrap" id="f-type">${C.TYPES.map(t => `<button type="button" class="chip${d.type === t ? ' on' : ''}" data-act="f-type" data-v="${t}">${icon(TYPE_ICON[t], 'xs')} ${TYPE_LABEL[t]}</button>`).join('')}</div></div>
     <div class="field${ask ? ' ask' : ''}" id="f-when"><label>${icon('calendar', 'xs')} When ${ask ? '<span class="ask-note">I guessed. Tap to change</span>' : ''}</label>
       <div class="two"><input type="date" class="input" id="f-date" value="${date}" required><input type="time" class="input" id="f-time" value="${time}"></div>
       <div class="when-quick">${formCtx.quick.map(([l], i) => `<button type="button" class="chip" data-act="f-when" data-i="${i}">${l}</button>`).join('')}</div>
@@ -773,7 +863,7 @@ function formHTML(d, { ask = false } = {}) {
     <div class="field"><label>${icon('repeat', 'xs')} Repeat</label>
       <div class="chips" id="f-repeat">${REPEAT_CHIPS.map(([k, l]) => `<button type="button" class="chip${rk === k ? ' on' : ''}" data-act="f-repeat" data-v="${k}">${l}</button>`).join('')}${rk === 'custom' ? `<button type="button" class="chip on" data-act="f-repeat" data-v="custom">${esc(C.repeatLabel(d.repeat, d.due))}</button>` : ''}</div>
     </div>
-    <div class="field" id="f-money" ${d.type === 'task' ? 'hidden' : ''}><label>${icon('wallet', 'xs')} Amount</label>
+    <div class="field" id="f-money" ${C.isMoney(d.type) ? '' : 'hidden'}><label>${icon('wallet', 'xs')} Amount</label>
       <div class="money-input"><input class="input" id="f-amount" inputmode="decimal" placeholder="Optional" value="${d.amount != null ? d.amount : ''}" autocomplete="off">
       <select class="input" id="f-cur">${Object.entries(C.CURRENCIES).map(([k, v]) => `<option value="${k}" ${(d.currency || S.settings.currency) === k ? 'selected' : ''}>${v.sym} ${k}</option>`).join('')}</select></div>
     </div>
@@ -787,7 +877,7 @@ function readForm(root) {
   let repeat = formCtx.repeat ? clone(formCtx.repeat) : null;
   const day = parseInt(date.slice(8, 10), 10);
   if (repeat && (repeat.freq === 'month' || repeat.freq === 'year')) { if (day > 28) repeat.day = day; else delete repeat.day; }
-  const amtRaw = type === 'task' ? '' : $('#f-amount', root).value.replace(/[^\d.]/g, '');
+  const amtRaw = !C.isMoney(type) ? '' : $('#f-amount', root).value.replace(/[^\d.]/g, '');
   const amount = amtRaw ? parseFloat(amtRaw) : null;
   return { title, type, due: date + 'T' + time, repeat, amount: isNaN(amount) ? null : amount, currency: $('#f-cur', root).value, notes: $('#f-notes', root).value.trim() };
 }
@@ -795,9 +885,9 @@ function shake(el) { el.animate([{ transform: 'translateX(0)' }, { transform: 't
 
 function openEditor(id, preset = {}) {
   const r = id ? find(id) : null;
-  const d = r ? clone(r) : { title: '', type: preset.type || 'task', due: C.toLocal(whenQuick().find(q => q[0] === 'Tomorrow')[1]), repeat: null, amount: null, currency: S.settings.currency, notes: '' };
+  const d = r ? clone(r) : { title: '', type: preset.type || 'task', due: preset.date ? preset.date + 'T' + S.settings.defaultTime : C.toLocal(whenQuick().find(q => q[0] === 'Tomorrow')[1]), repeat: null, amount: null, currency: S.settings.currency, notes: '' };
   const sh = openSheet({
-    title: r ? 'Edit reminder' : 'New reminder',
+    title: r ? 'Edit reminder' : preset.date ? 'New on ' + dayTitle(preset.date) : 'New ' + TYPE_LABEL[d.type].toLowerCase(),
     body: formHTML(d),
     foot: `<div class="btn-row">${r ? `<button class="btn danger" data-act="delete" data-id="${r.id}" style="flex:0 0 auto">${icon('trash', 'sm')}</button>` : ''}<button class="btn primary" data-act="editor-save" data-id="${r ? r.id : ''}">${icon('check', 'sm')} Save</button></div>`,
     full: true
@@ -829,19 +919,21 @@ function newReminder(f) {
 }
 
 /* ───────── Voice capture ───────── */
-const Cap = { rec: null, final: '', interim: '', error: null, timer: null, draft: null, active: false, retriedLang: false };
+const Cap = { rec: null, final: '', interim: '', error: null, timer: null, draft: null, active: false, retriedLang: false, presetDate: null };
 
 function openCapture(opts = {}) {
   unlockAudio();
   stopSpeaking();
-  openSheet({ title: 'Talk to Kimi', body: '<div class="capture" id="cap"></div>', full: true, onClose: endCapture });
+  openSheet({ title: opts.presetDate ? 'Add on ' + dayTitle(opts.presetDate) : 'Talk to Kimi', body: '<div class="capture" id="cap"></div>', full: true, onClose: endCapture });
   Cap.active = true;
+  Cap.presetDate = opts.presetDate || null;
   if (opts.text) return showConfirm(opts.text, { demo: !!opts.demo });
   if (opts.mode === 'type' || !SR) return showType(SR ? '' : 'Voice input isn\'t available in this browser. Type below. Your keyboard\'s 🎤 button works too!');
   startListening();
 }
 function endCapture() {
   Cap.active = false;
+  Cap.presetDate = null;
   clearTimeout(Cap.timer);
   if (Cap.rec) { try { Cap.rec.abort(); } catch { /* ignore */ } Cap.rec = null; }
 }
@@ -905,10 +997,17 @@ function updateTranscript() {
   t.innerHTML = esc(Cap.final) + (Cap.interim ? ` <span class="interim">${esc(Cap.interim)}</span>` : '');
   renderLiveChips(text);
 }
+function withPresetDate(p) {
+  if (Cap.presetDate && !p.dateSaid) {
+    p.due = Cap.presetDate + 'T' + (p.timeSaid ? p.due.slice(11) : S.settings.defaultTime);
+    p.guessed = false;
+  }
+  return p;
+}
 function renderLiveChips(text) {
   const box = $('#cap-chips'); if (!box) return;
   if (!text.trim()) { box.innerHTML = ''; return; }
-  const p = C.parse(text, { currency: S.settings.currency, defaultTime: S.settings.defaultTime });
+  const p = withPresetDate(C.parse(text, { currency: S.settings.currency, defaultTime: S.settings.defaultTime }));
   const chips = [];
   if (!p.guessed) chips.push(`<span class="lchip">${icon('calendar')} ${esc(C.whenLabel(p.due))}</span>`);
   if (p.repeat) chips.push(`<span class="lchip">${icon('repeat')} ${esc(C.repeatLabel(p.repeat, p.due))}</span>`);
@@ -974,7 +1073,7 @@ function typeNext() {
 function confirmSentence(p) {
   const lcFirst = t => (/^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
   const spoken = C.speakWhen(p.due);
-  const shown = spoken.replace(' a.m.', ' AM').replace(' p.m.', ' PM');
+  const shown = (/^(today|tomorrow)/.test(spoken) ? '' : 'on ') + spoken.replace(' a.m.', ' AM').replace(' p.m.', ' PM');
   const rep = p.repeat ? C.repeatLabel(p.repeat, p.due).replace(/^./, c => c.toLowerCase()) : '';
   const amt = p.amount != null ? ` (${C.money(p.amount, p.currency)})` : '';
   const what = p.type === 'task' ? `to <b>${esc(lcFirst(p.title))}</b>` : `about <b>${esc(p.title)}</b>${esc(amt)}`;
@@ -986,7 +1085,7 @@ function confirmSentence(p) {
 }
 function showConfirm(text, { demo = false } = {}) {
   const el = capEl(); if (!el) return;
-  const p = C.parse(text, { currency: S.settings.currency, defaultTime: S.settings.defaultTime });
+  const p = withPresetDate(C.parse(text, { currency: S.settings.currency, defaultTime: S.settings.defaultTime }));
   Cap.draft = p;
   const sent = confirmSentence(p);
   const auto = S.settings.autoSave && !p.guessed && !demo;
@@ -1067,7 +1166,7 @@ function fireAlert(r) {
 }
 async function systemNotify(r) {
   if (!S.settings.notifications || !('Notification' in window) || Notification.permission !== 'granted') return;
-  const title = (r.type === 'task' ? '⏰ ' : r.type === 'bill' ? '🧾 ' : '🔁 ') + r.title;
+  const title = (C.TYPE_EMOJI[r.type] || '⏰') + ' ' + r.title;
   const body = [r.amount != null ? C.money(r.amount, r.currency) : '', C.whenLabel(r.due)].filter(Boolean).join(' · ');
   try {
     const reg = await navigator.serviceWorker?.ready;
@@ -1075,7 +1174,7 @@ async function systemNotify(r) {
       await reg.showNotification(title, {
         body, tag: 'kimi-' + r.id, renotify: true, requireInteraction: true, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png',
         vibrate: [200, 100, 200, 100, 300], data: { id: r.id },
-        actions: [{ action: 'done', title: r.type === 'task' ? '✓ Done' : '✓ Paid' }, { action: 'snooze', title: '⏰ 1 hour' }]
+        actions: [{ action: 'done', title: '✓ ' + doneWord(r.type) }, { action: 'snooze', title: '⏰ 1 hour' }]
       });
       return;
     }
@@ -1088,7 +1187,7 @@ function showNextAlarm() {
   const r = find(id);
   if (!r || r.done) return showNextAlarm();
   alarmOpen = id;
-  const word = r.type === 'task' ? 'Done' : 'Paid';
+  const word = doneWord(r.type);
   $('#alarm-root').innerHTML = `
     <div class="alarm-backdrop" role="alertdialog" aria-label="Reminder">
       <div class="alarm">
@@ -1336,6 +1435,38 @@ function endDrag() {
 document.addEventListener('pointerup', endDrag);
 document.addEventListener('pointercancel', endDrag);
 
+/* ───────── Calendar: press and hold a date to add ───────── */
+let calPress = null, lastCalTap = { key: null, t: 0 };
+document.addEventListener('pointerdown', e => {
+  const cell = e.target.closest('.cal-day'); if (!cell) return;
+  const key = cell.dataset.date;
+  cell.classList.add('pressing');
+  calPress = { cell, key, x: e.clientX, y: e.clientY, fired: false };
+  calPress.timer = setTimeout(() => {
+    if (!calPress || calPress.key !== key) return;
+    calPress.fired = true;
+    cell.classList.remove('pressing');
+    lastCalTap = { key: null, t: 0 };
+    openAddOnDate(key);
+  }, 480);
+}, { passive: true });
+document.addEventListener('pointermove', e => {
+  if (calPress && (Math.abs(e.clientX - calPress.x) > 10 || Math.abs(e.clientY - calPress.y) > 10)) {
+    clearTimeout(calPress.timer); calPress.cell.classList.remove('pressing'); calPress = null;
+  }
+}, { passive: true });
+function endCalPress() {
+  if (!calPress) return;
+  clearTimeout(calPress.timer);
+  calPress.cell.classList.remove('pressing');
+  if (calPress.fired) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 400); }
+  calPress = null;
+}
+document.addEventListener('pointerup', endCalPress);
+document.addEventListener('pointercancel', endCalPress);
+document.addEventListener('contextmenu', e => { if (e.target.closest('.cal-day, .swipe .card')) e.preventDefault(); });
+document.addEventListener('dblclick', e => { if (e.target.closest('.cal-day')) e.preventDefault(); });
+
 /* ───────── Event delegation ───────── */
 const ACTIONS = {
   'capture': () => openCapture(),
@@ -1367,10 +1498,26 @@ const ACTIONS = {
   'delete': el => removeReminder(el.dataset.id),
   'ics': el => { const r = find(el.dataset.id); if (r) addToCalendar([r], `kimi-${r.title.replace(/[^\w]+/g, '-').slice(0, 30).toLowerCase() || 'reminder'}.ics`); },
   'ics-all': () => addToCalendar(activeReminders().filter(r => !r._test), 'kimi-reminders.ics'),
-  'seg': el => { ui.listSeg = el.dataset.v; renderList(); haptic(5); },
+  'list-type': el => { ui.listType = el.dataset.v; if (ui.tab !== 'list') switchTab('list'); else { renderList(); window.scrollTo({ top: 0 }); } haptic(5); },
+  'list-view': el => { ui.listView = el.dataset.v; renderList(); haptic(5); },
+  'cal-day': el => {
+    const key = el.dataset.date, t = Date.now();
+    if (lastCalTap.key === key && t - lastCalTap.t < 400) { lastCalTap = { key: null, t: 0 }; openAddOnDate(key); return; }
+    lastCalTap = { key, t };
+    ui.calSel = key;
+    const d = C.fromLocal(key + 'T12:00');
+    if (d.getMonth() !== ui.calMonth.getMonth() || d.getFullYear() !== ui.calMonth.getFullYear()) ui.calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    renderCalendar(); haptic(5);
+  },
+  'cal-prev': () => { ui.calMonth = new Date(ui.calMonth.getFullYear(), ui.calMonth.getMonth() - 1, 1); renderCalendar(); haptic(5); },
+  'cal-next': () => { ui.calMonth = new Date(ui.calMonth.getFullYear(), ui.calMonth.getMonth() + 1, 1); renderCalendar(); haptic(5); },
+  'cal-today': () => { const n = new Date(); ui.calMonth = new Date(n.getFullYear(), n.getMonth(), 1); ui.calSel = C.toLocal(n).slice(0, 10); renderCalendar(); haptic(5); },
+  'add-on-date': el => openAddOnDate(el.dataset.date),
+  'date-new': el => openEditor(null, { type: el.dataset.type, date: el.dataset.date }),
+  'date-speak': el => openCapture({ presetDate: el.dataset.date }),
   'f-type': el => {
     $$('#f-type button').forEach(b => b.classList.toggle('on', b === el));
-    $('#f-money').hidden = el.dataset.v === 'task';
+    $('#f-money').hidden = !C.isMoney(el.dataset.v);
     haptic(5);
   },
   'f-repeat': el => {
@@ -1490,7 +1637,8 @@ async function boot() {
   try { tab = sessionStorage.getItem('kimi_tab') || 'home'; } catch { /* ignore */ }
   const params = new URLSearchParams(location.search);
   if (params.get('tab')) tab = params.get('tab');
-  if (!['home', 'list', 'bills', 'settings'].includes(tab)) tab = 'home';
+  if (tab === 'bills') { tab = 'list'; ui.listType = 'bill'; }
+  if (!['home', 'list', 'calendar', 'settings'].includes(tab)) tab = 'home';
   ui.tab = tab;
   $$('.screen').forEach(s => s.classList.toggle('active', s.dataset.screen === tab));
   renderAll();

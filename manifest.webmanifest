@@ -17,7 +17,7 @@
   ],
   "shortcuts": [
     { "name": "Speak a reminder", "short_name": "Speak", "url": "./?action=voice", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Bills & subscriptions", "short_name": "Bills", "url": "./?tab=bills", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+    { "name": "Calendar", "short_name": "Calendar", "url": "./?tab=calendar", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
   ],
   "share_target": {
     "action": "./",

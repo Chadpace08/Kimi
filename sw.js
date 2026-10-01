@@ -2,7 +2,7 @@
 importScripts('./core.js');
 const Core = self.KimiCore;
 
-const VERSION = 'kimi-v5.0.0';
+const VERSION = 'kimi-v5.1.0';
 const SHELL = [
   './',
   './index.html',
@@ -114,7 +114,7 @@ function notifyFor(rem) {
   const bits = [];
   if (rem.amount != null) bits.push(Core.money(rem.amount, rem.currency));
   bits.push(Core.whenLabel(rem.due));
-  return self.registration.showNotification((rem.type === 'task' ? '⏰ ' : rem.type === 'bill' ? '🧾 ' : '🔁 ') + rem.title, {
+  return self.registration.showNotification((Core.TYPE_EMOJI[rem.type] || '⏰') + ' ' + rem.title, {
     body: bits.join(' · ') + '\nTap Done or Snooze',
     tag: 'kimi-' + rem.id,
     renotify: true,
@@ -123,7 +123,7 @@ function notifyFor(rem) {
     badge: './icons/icon-192.png',
     vibrate: [200, 100, 200, 100, 300],
     data: { id: rem.id },
-    actions: [{ action: 'done', title: rem.type === 'task' ? '✓ Done' : '✓ Paid' }, { action: 'snooze', title: '⏰ 1 hour' }]
+    actions: [{ action: 'done', title: Core.isMoney(rem.type) ? '✓ Paid' : '✓ Done' }, { action: 'snooze', title: '⏰ 1 hour' }]
   });
 }
 

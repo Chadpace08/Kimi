@@ -7,6 +7,7 @@
 > “Remind me tomorrow morning to send the invoice.”
 > “I need to renew my domain in December.”
 > “Remind me every Friday to check my bookkeeping.”
+> “Dentist appointment next Tuesday at 10.”
 
 No account, no backend, no paid APIs. Everything stays on your phone.
 
@@ -15,13 +16,14 @@ No account, no backend, no paid APIs. Everything stays on your phone.
 - **Voice capture**: one big mic button on every screen, a live transcript, and live chips (📅 date · 🔁 repeat · ₱ amount) that update while you speak.
 - **"Got it" confirmation**: Kimi repeats back what it understood (out loud, too) and **auto-saves in 5 seconds**. Tap anything to change it. If you didn't say *when*, it asks you with one-tap options.
 - **Understands natural speech**: dates (*Oct 15, the 20th, next Tuesday, in December, end of the month*), times (*at 3, tomorrow morning, tonight, in 20 minutes*), repeats (*every Friday, every weekday, monthly, on the 5th of every month, every other week, yearly*), amounts (*1,299 pesos, ₱549, $11.99, 2.5k*), and a little Taglish (*bukas, mamaya, kada buwan, bayaran*).
-- **Tasks, bills and subscriptions**: detected automatically. The Bills tab shows your monthly recurring total, what's due in 30 days, and what you've paid this month.
+- **Four sections: Tasks, Appointments, Bills, Subscriptions.** Kimi sorts each reminder automatically. The Reminders page shows every section separately, or one section at a time. Bills and Subscriptions show your monthly total, what's due in 30 days, and what you've paid this month.
+- **Calendar**: a month view with coloured dots per section. Tap a day to see what's on it. **Double-tap or press and hold a date** to add something on that day: speak or type it, or pick Appointment, Bill, Task or Subscription.
 - **Alerts**: an in-app alarm with chime, vibration and spoken reminder; system notifications with **Done** and **Snooze** buttons; an app icon badge; and a "while you were away" catch-up.
 - **Snooze & done**: swipe a reminder right to finish it, left to snooze it, or tap the circle. Every action has **Undo**.
 - **Add to phone calendar (.ics)**: back-up alarms that ring even when Kimi is closed.
 - **PWA**: install to your home screen, works offline, has app shortcuts, and you can share text from other apps (e.g. a bill SMS) straight into Kimi.
 - **Backup**: export/import a JSON file (merge or replace), or send it to Google Drive or email via the share sheet.
-- Light/dark mode, big touch targets, haptics, reduced-motion support.
+- Plain, high-contrast text in your phone's own font, light/dark mode, big touch targets, haptics, reduced-motion support.
 - Upgrading from the old Kimi? Your reminders come across automatically. Old notes can be exported from Settings.
 
 ## Put it on your phone

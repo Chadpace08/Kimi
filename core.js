@@ -103,6 +103,25 @@
     return 0;
   }
 
+  /* ───────── Types ───────── */
+  const TYPES = ['task', 'appointment', 'bill', 'subscription'];
+  const TYPE_EMOJI = { task: '⏰', appointment: '📅', bill: '🧾', subscription: '🔁' };
+  const isMoney = t => t === 'bill' || t === 'subscription';
+
+  /* Every date a reminder lands on between two dates (repeats projected forward) */
+  function occurrences(rem, from, to) {
+    const out = [];
+    let cur = rem.due, guard = 0;
+    while (cur && guard++ < 400) {
+      const d = fromLocal(cur);
+      if (d > to) break;
+      if (d >= from) out.push(cur);
+      if (!rem.repeat || rem.done) break;
+      cur = nextOccurrence(cur === rem.due && rem.base && rem.base !== rem.due ? rem.base : cur, rem.repeat);
+    }
+    return out;
+  }
+
   /* ───────── Actions shared with the service worker ───────── */
   function completeReminder(rem, now) {
     now = now || new Date();
@@ -113,7 +132,7 @@
     if (rem.repeat) {
       let next = nextOccurrence(rem.base || rem.due, rem.repeat);
       // Tasks catch up to the future; bills advance one period at a time (each period is a payment)
-      if (rem.type === 'task') {
+      if (!isMoney(rem.type)) {
         let guard = 0;
         while (next && fromLocal(next) <= now && guard++ < 1000) next = nextOccurrence(next, rem.repeat);
       }
@@ -215,6 +234,7 @@
   const num = s => parseFloat(String(s).replace(/,/g, ''));
 
   const SUB_WORDS = /\b(subscriptions?|subscribe|membership|netflix|spotify|canva|youtube premium|youtube|disney\+?|icloud|google one|google workspace|chatgpt|claude|adobe|microsoft 365|office 365|domain|hosting|premium|apple music|prime video|amazon prime|hbo|viu|vivamax|notion|zoom|dropbox|patreon|gym membership|renew(?:al)?)\b/i;
+  const APPT_WORDS = /\b(appointments?|appt|meeting|meet(?:ing)? with|check-?up|dentist|doctor|doc|clinic|hospital|consult(?:ation)?|interview|call with|lunch with|dinner with|coffee with|haircut|salon|spa|massage|session|therapy|vet|class|webinar|zoom call|flight|reservation|booking|party|wedding|birthday party)\b/i;
   const BILL_WORDS = /\b(pay|paying|bills?|payment|rent|electric(?:ity)?|meralco|veco|water bill|maynilad|manila water|internet|pldt|globe|converge|smart|sky ?cable|wi-?fi|loan|amortization|installment|insurance|credit card|card due|tuition|tax(?:es)?|dues|association dues|sss|pag-?ibig|philhealth|bir|mortgage|condo|utilities|phone bill|postpaid)\b/i;
 
   /* Light Taglish support: map common Filipino time words to English before parsing */
@@ -270,7 +290,7 @@
     w = w.replace(new RegExp('\\b(' + NW2 + ')\\s+(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?|am|pm)\\b', 'gi'), (m, n, u) => NUM_WORDS[n.toLowerCase()] + ' ' + u);
     // "1,299.00" keep, but "1 299" no.
 
-    const out = { title: '', type: 'task', due: null, repeat: null, amount: null, currency: defCur, guessed: false, heard: raw };
+    const out = { title: '', type: 'task', due: null, repeat: null, amount: null, currency: defCur, guessed: false, dateSaid: false, timeSaid: false, heard: raw };
     let date = null;          // Date (day precision)
     let exact = null;         // Date with exact time (relative "in 2 hours")
     let time = null;          // [h, m]
@@ -510,14 +530,22 @@
     }
 
     /* Type */
-    if (SUB_WORDS.test(lw)) out.type = 'subscription';
+    if (APPT_WORDS.test(lw) && out.amount == null && !BILL_WORDS.test(lw)) out.type = 'appointment';
+    else if (SUB_WORDS.test(lw)) out.type = 'subscription';
     else if (BILL_WORDS.test(lw) || (out.amount != null && out.repeat)) out.type = 'bill';
     else if (out.amount != null) out.type = 'bill';
     if (out.type === 'subscription' && !/\b(subscriptions?|membership|renew(al)?|domain|hosting|premium|plan)\b/i.test(lw) && !out.repeat && out.amount == null && BILL_WORDS.test(lw)) out.type = 'bill';
 
     /* Resolve due date/time */
+    out.dateSaid = !!(date || exact || weekDay != null || monthDay);
+    out.timeSaid = !!(time || part || exact);
     const partTime = { morning: [9, 0], afternoon: [14, 0], evening: [18, 0], night: [20, 0] };
     if (!time && part) time = partTime[part] || null;
+    if (!time && !exact) {
+      if (/\bbreakfast\b/i.test(lw)) time = [8, 0];
+      else if (/\blunch\b/i.test(lw)) time = [12, 0];
+      else if (/\bdinner\b/i.test(lw)) time = [19, 0];
+    }
     let due;
     if (exact) {
       due = exact;
@@ -540,7 +568,7 @@
       if (due <= now) due = addDays(due, 1);
       if (out.repeat && out.repeat.weekdays) while (due.getDay() === 0 || due.getDay() === 6) due = addDays(due, 1);
     } else if (out.repeat) {
-      if (out.type !== 'task' && out.repeat.freq !== 'day') {
+      if (isMoney(out.type) && out.repeat.freq !== 'day') {
         // Money: assume it was just paid, so the next one is one period away
         due = fromLocal(nextOccurrence(toLocal(setTime(dateOnly(now), defH, defM)), out.repeat));
       } else {
@@ -568,7 +596,7 @@
     const TRAIL = /\s*\b(on|at|in|by|for|and|to|is|are|the|every|each|of|that|due|due on|due date|this|next|starting|from|around|until|before|please|it|its|it's|which is|which|costs?|price|was|will be|be|remind me|reminder|for me|me|now|then|also|about|again|lang|po)$/i;
     let guard = 0, prev;
     do { prev = t; t = t.replace(LEAD, '').replace(TRAIL, '').trim(); } while (t !== prev && guard++ < 20);
-    t = t.replace(/^my\s+/i, m => (out.type !== 'task' ? '' : m));
+    t = t.replace(/^my\s+/i, m => (isMoney(out.type) ? '' : m));
     t = t.replace(/\b(subscription|bill)\s+(is|are)\b/i, '$1').trim();
     t = t.replace(/\s{2,}/g, ' ').trim();
     if (!t || t.length < 2) t = out.type === 'bill' ? 'Bill payment' : out.type === 'subscription' ? 'Subscription' : (raw || 'Reminder');
@@ -598,12 +626,13 @@
       const end = new Date(d.getTime() + 15 * 60000);
       const desc = [r.amount != null ? 'Amount: ' + money(r.amount, r.currency) : '', r.notes || '', 'Added by Kimi'].filter(Boolean).join('\n');
       lines.push('BEGIN:VEVENT', 'UID:' + r.id + '@kimi.app', 'DTSTAMP:' + dtstamp, 'DTSTART:' + icsDate(d), 'DTEND:' + icsDate(end),
-        'SUMMARY:' + icsEscape((r.type === 'task' ? '' : r.type === 'bill' ? '🧾 ' : '🔁 ') + r.title + (r.amount != null ? ' (' + money(r.amount, r.currency) + ')' : '')),
+        'SUMMARY:' + icsEscape((r.type === 'task' ? '' : TYPE_EMOJI[r.type] + ' ') + r.title + (r.amount != null ? ' (' + money(r.amount, r.currency) + ')' : '')),
         'DESCRIPTION:' + icsEscape(desc));
       const rule = icsRule(r.repeat, r.due);
       if (rule) lines.push('RRULE:' + rule);
       lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape(r.title), 'TRIGGER:-PT0M', 'END:VALARM');
-      if (r.type !== 'task') lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape('Tomorrow: ' + r.title), 'TRIGGER:-P1D', 'END:VALARM');
+      if (isMoney(r.type)) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape('Tomorrow: ' + r.title), 'TRIGGER:-P1D', 'END:VALARM');
+      if (r.type === 'appointment') lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape('In 1 hour: ' + r.title), 'TRIGGER:-PT1H', 'END:VALARM');
       lines.push('END:VEVENT');
     }
     lines.push('END:VCALENDAR');
@@ -614,6 +643,7 @@
     pad, toLocal, fromLocal, dateOnly, addDays, addMonths, setTime, dayDiff, parseHM,
     MONTHS, MONTHS_SHORT, DAYS, DAYS_SHORT, CURRENCIES, REPEAT_PRESETS,
     repeatKey, nextOccurrence, repeatLabel, ordinal, monthlyEquivalent,
+    TYPES, TYPE_EMOJI, isMoney, occurrences,
     completeReminder, snoozeReminder, dueReminders,
     fmtTime, whenLabel, speakWhen, relative, money,
     parse, buildICS
